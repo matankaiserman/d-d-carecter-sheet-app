@@ -281,7 +281,7 @@ function save(c=C()){ if(c) c.updatedAt=Date.now(); LS.set('dnd24.chars',chars);
 const loot={text:LS.get('dnd24.loot','')};
 function syncNote(){ const el=document.getElementById('syncnote'); if(el) el.textContent='📱 Saved on this phone only. Use Share → file to back up a character.'; }
 try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(e){}
-const APP_VERSION='1.2 (level up)';
+const APP_VERSION='1.3 (spell picker)';
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   const hadCtrl=!!navigator.serviceWorker.controller; let reloaded=false;
   navigator.serviceWorker.addEventListener('controllerchange',()=>{ if(hadCtrl&&!reloaded){reloaded=true;location.reload()} });
@@ -410,10 +410,11 @@ function rSpells(c){
   h+=`</div>`;
   const by={}; c.spells.forEach(s=>(by[s.lvl]=by[s.lvl]||[]).push(s));
   Object.keys(by).sort((a,b)=>a-b).forEach(l=>{
-    h+=`<div class="card"><h2>${l==0?'CANTRIPS':'LEVEL '+l}</h2>`+by[l].map(s=>`<div class="item"><div class="hd"><div style="flex:1;min-width:0" data-a="toggleSpell" data-id="${s.id}"><div class="nm" dir="auto">${esc(s.name)}${s.conc?'<span class="tag c">C</span>':''}${s.ritual?'<span class="tag r">R</span>':''}${s.lvl>0&&s.prep?'<span class="tag p">P</span>':''}</div><div class="meta">${esc(s.time)} · ${esc(s.range)}${s.comp?' · '+esc(s.comp):''}</div></div>${pencil('editSpell','data-id="'+s.id+'"')}</div>${openSpell[s.id]?`<div class="meta">Duration: ${esc(s.dur||'—')}</div><div class="desc" dir="auto">${esc(s.desc)}</div>`:''}</div>`).join('')+`</div>`;
+    h+=`<div class="card"><h2>${l==0?'CANTRIPS':'LEVEL '+l}</h2>`+by[l].map(s=>`<div class="item"><div class="hd"><div style="flex:1;min-width:0" data-a="toggleSpell" data-id="${s.id}"><div class="nm" dir="auto">${esc(s.name)}${s.conc?'<span class="tag c">C</span>':''}${s.ritual?'<span class="tag r">R</span>':''}${s.lvl>0&&s.prep?'<span class="tag p">P</span>':''}</div><div class="meta">${esc(s.time)} · ${esc(s.range)}${s.comp?' · '+esc(s.comp):''}</div></div>${pencil('editSpell','data-id="'+s.id+'"')}</div>${openSpell[s.id]?`<div class="meta">${esc(s.comp||'')} · Duration: ${esc(s.dur||'—')}</div><div class="desc" dir="auto">${esc(s.desc)}</div>${s.lvl>0?`<button class="btn g sm mt" data-a="prepToggle" data-id="${s.id}">${s.prep?'Unprepare':'Mark as prepared'}</button>`:''}`:''}</div>`).join('')+`</div>`;
   });
   if(!c.spells.length) h+=`<div class="card muted">No spells yet.</div>`;
-  if(editing) h+=`<button class="add" data-a="addSpell">+ Add spell</button>`;
+  h=h.replace('<h2>SPELLCASTING','<button class="btn w mb" data-a="picker">✨ Choose spells from the list</button><h2>SPELLCASTING');
+  if(editing) h+=`<button class="add" data-a="addSpell">+ Add a custom spell by hand</button>`;
   else h+=`<div class="muted" style="text-align:center">Tap a spell to read it · C = Concentration · R = Ritual · P = Prepared</div>`;
   return h;
 }
@@ -553,6 +554,44 @@ function applyLevelUp(){
   showToast('Level Up!',`Level ${p.nl}`,`+${gain} HP · ${p.todo.length+p.feats.length} things to choose`,'n20');
 }
 
+
+/* ================= spell picker (SRD 5.2, offline) ================= */
+let SPELLDB=null, pk={q:'',lvl:'all',cls:'mine'}, pkOpen={};
+const CLASSES=['bard','cleric','druid','paladin','ranger','sorcerer','warlock','wizard'];
+async function loadSpells(){ if(SPELLDB) return SPELLDB; const r=await fetch('spells.json'); SPELLDB=await r.json(); return SPELLDB; }
+const hasSpell=(c,name)=>c.spells.some(x=>(x.name||'').toLowerCase()===name.toLowerCase());
+function prepLimits(c){ const k=clsKey(c), l=Math.max(1,num(c.level));
+  if(k==='warlock') return {cant:T(WARLOCK.cant,l),prep:T(WARLOCK.prep,l)}; return null; }
+async function openPicker(){
+  const c=C(); if(!CLASSES.includes(clsKey(c))) pk.cls=pk.cls==='mine'?'all':pk.cls;
+  sheet(`<h3>✨ Add spells</h3><div id="pkhead"></div><input id="pkq" placeholder="Search spells…" value="${esc(pk.q)}" class="mb">
+   <div id="pklist"><div class="muted">Loading spells…</div></div>
+   <p class="muted mt" style="font-size:.7rem">Spell text: System Reference Document 5.2 © Wizards of the Coast, CC-BY-4.0 (data via 5e-bits). Spells not in the SRD (e.g. from other books) can be added by hand with ✎ Edit → + Add spell.</p>
+   <button class="btn w mt" data-a="close">Done</button>`);
+  try{ await loadSpells() }catch(e){ document.getElementById('pklist').innerHTML='<div class="muted">Could not load the spell list. Open the app once with internet so it can save it for offline use.</div>'; return }
+  pkRender();
+}
+function pkRender(){
+  const c=C(), k=clsKey(c), lim=prepLimits(c), mine=CLASSES.includes(k);
+  const nC=c.spells.filter(x=>num(x.lvl)===0).length, nP=c.spells.filter(x=>num(x.lvl)>0&&x.prep).length;
+  const h=document.getElementById('pkhead'); if(!h) return;
+  h.innerHTML=`${lim?`<div class="res"><div class="t">${esc(c.cls)} ${c.level}<span>Cantrips ${nC}/${lim.cant} · Prepared ${nP}/${lim.prep} (Pact of the Chain / invocation spells don't count)</span></div></div>`:''}
+   <div class="pips mb" style="gap:6px">${[['mine',mine?c.cls+' list':null],['all','All classes'],...CLASSES.filter(x=>x!==k).map(x=>[x,x[0].toUpperCase()+x.slice(1)])].filter(x=>x[1]).map(([v,l])=>`<button class="chip ${pk.cls===v?'on':''}" data-a="pkcls" data-k="${v}">${esc(l)}</button>`).join('')}</div>
+   <div class="pips mb" style="gap:6px">${['all',0,1,2,3,4,5,6,7,8,9].map(v=>`<button class="chip ${String(pk.lvl)===String(v)?'on':''}" data-a="pklvl" data-k="${v}">${v==='all'?'All':v===0?'Cantrip':'L'+v}</button>`).join('')}</div>`;
+  const cls=pk.cls==='mine'?k:pk.cls, q=pk.q.trim().toLowerCase();
+  const list=SPELLDB.filter(x=>(cls==='all'||x[3].includes(cls))&&(pk.lvl==='all'||x[1]===Number(pk.lvl))&&(!q||x[0].toLowerCase().includes(q)||x[2].toLowerCase().includes(q)));
+  document.getElementById('pklist').innerHTML=(list.length?'':'<div class="muted">No spells match.</div>')+list.slice(0,150).map(x=>{const on=hasSpell(c,x[0]);
+    return `<div class="item"><div class="hd"><div style="flex:1;min-width:0" data-a="pkopen" data-k="${esc(x[0])}"><div class="nm">${esc(x[0])}${x[8]?'<span class="tag c">C</span>':''}${x[9]?'<span class="tag r">R</span>':''}</div><div class="meta">${x[1]===0?'Cantrip':'Level '+x[1]} · ${esc(x[2])} · ${esc(x[4])} · ${esc(x[5])}</div></div>
+     <button class="btn sm ${on?'g':''}" data-a="pkadd" data-k="${esc(x[0])}">${on?'✓ Added':'+ Add'}</button></div>
+     ${pkOpen[x[0]]?`<div class="meta">${esc(x[6])} · ${esc(x[7])} · ${esc(x[3].join(', '))}</div><div class="desc">${esc(x[10])}</div>`:''}</div>`}).join('')+(list.length>150?`<div class="muted">Showing 150 of ${list.length} — search or pick a level to narrow it down.</div>`:'');
+}
+function pkToggle(name){
+  const c=C(), x=SPELLDB.find(y=>y[0]===name); if(!x) return;
+  if(hasSpell(c,name)){ c.spells=c.spells.filter(y=>(y.name||'').toLowerCase()!==name.toLowerCase()); msg('Removed '+name) }
+  else { c.spells.push({id:uid(),lvl:x[1],name:x[0],time:x[4],range:x[5],comp:x[6],dur:x[7],conc:!!x[8],ritual:!!x[9],prep:true,desc:x[10]}); }
+  save(c); render(); pkRender();
+}
+
 /* ================= roster / share ================= */
 function rosterHTML(){
   return `<h3>Characters</h3>`+chars.map(c=>`<div class="charrow ${c.id===curId?'cur':''}"><div class="info" data-a="pick" data-id="${c.id}"><b dir="auto">${esc(c.name)}</b><span class="muted">Lvl ${c.level} ${esc(c.species)} ${esc(c.cls)}</span></div>
@@ -617,6 +656,12 @@ const A={
   delchar:el=>{const id=el.dataset.id;const c=findIn(chars,id);confirmBox(`Delete ${c.name}? This can't be undone (export it first if unsure).`,()=>{chars=chars.filter(x=>x.id!==id);if(!chars.length)chars.push(blankChar());if(curId===id)curId=chars[0].id})},
   export:el=>exportChar(el.dataset.id),
   import:importSheet, doimport:doImport,
+  picker:()=>openPicker(),
+  pkcls:el=>{pk.cls=el.dataset.k;pkRender()},
+  pklvl:el=>{pk.lvl=el.dataset.k;pkRender()},
+  pkopen:el=>{pkOpen[el.dataset.k]=!pkOpen[el.dataset.k];pkRender()},
+  pkadd:el=>pkToggle(el.dataset.k),
+  prepToggle:el=>{const c=C();const sp=findIn(c.spells,el.dataset.id);sp.prep=!sp.prep;save(c);render()},
   levelup:()=>{closeModal();const c=C();if(num(c.level)>=20)return msg('Already level 20');const p=levelUpPlan(c);lu={mode:'avg',roll:0,extra:p.tough?2:0};luSheet()},
   luavg:()=>{lu.extra=num(document.getElementById('luextra').value);lu.mode='avg';luSheet()},
   luroll:()=>{const p=levelUpPlan(C());lu.extra=num(document.getElementById('luextra').value);lu.mode='roll';lu.roll=d(p.die);luSheet()},
@@ -689,7 +734,7 @@ const A={
 document.addEventListener('click',e=>{const el=e.target.closest('[data-a]');if(!el)return;const f=A[el.dataset.a];if(!f)return;
   if(el.dataset.a==='cond'){f(el);return} if(el.tagName==='INPUT')return; f(el,e)});
 document.addEventListener('change',e=>{const el=e.target;if(!el.dataset||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.dataset.num?num(el.value):el.value);save();});
-document.addEventListener('input',e=>{const el=e.target;if(el.tagName!=='TEXTAREA'||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.value);clearTimeout(saveT);saveT=setTimeout(()=>save(c),600)});
+document.addEventListener('input',e=>{if(e.target.id==='pkq'){pk.q=e.target.value;pkRender();return}const el=e.target;if(el.tagName!=='TEXTAREA'||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.value);clearTimeout(saveT);saveT=setTimeout(()=>save(c),600)});
 render();
 </script>
 </body>
