@@ -74,7 +74,7 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 .item{background:var(--well);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px}
 .item .hd{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .item .nm{font-weight:700}
-.item .meta{font-size:.78rem;color:var(--muted);margin-top:3px}
+.item .meta{font-size:.78rem;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
 .item .desc{font-size:.84rem;color:#cbd5e1;line-height:1.45;margin-top:6px;white-space:pre-wrap}
 .tag{display:inline-block;font-size:.65rem;font-weight:800;padding:2px 6px;border-radius:5px;background:#334155;color:var(--accent2);margin-left:4px;vertical-align:middle}
 .tag.c{color:#f472b6}.tag.r{color:var(--blue)}.tag.p{color:var(--green)}
@@ -174,6 +174,30 @@ function blankChar(){
     prof:{armor:'',weapons:'',tools:'',languages:''},senses:'',defenses:'',
     notes:{appearance:'',personality:'',backstory:'',notes:''}};
 }
+function merchantItems(){
+  const I=(name,qty,wt,eq,notes)=>({id:uid(),name,qty,wt,eq:!!eq,notes:notes||''});
+  return [
+    I('Sickle',1,2,0,'Light · Mastery: Nick (not usable without Weapon Mastery)'),
+    I('Dagger',2,1,0,'Finesse, Light, Thrown 20/60'),
+    I('Leather Armor',1,10,1,'AC 11 + DEX'),
+    I('Backpack',1,5,0,'Holds 30 lb'),
+    I("Traveler's Clothes",1,4,0,''),
+    I('Lamp',1,1,0,'Burns Oil: bright light 15 ft, dim 30 ft more'),
+    I('צעיף שרוג',1,0,0,'צעיף בעבודגת יד מאמא של צור'),
+    I('קרמים למכירה',108,0,0,''),
+    I('Arcane Focus (orb)',1,0,0,'Spellcasting Focus'),
+    I('Book',1,5,0,'+5 to INT (Arcana/History/Nature/Religion) checks about its topic'),
+    I('Book (occult lore)',1,0,0,''),
+    I('Pouch',2,1,0,'Holds 6 lb'),
+    I('Parchment',10,0,0,''),
+    I('Ink',1,0,0,'1-oz bottle, ~500 pages'),
+    I('Ink Pen',1,0,0,''),
+    I('Oil (flask)',10,1,0,'Throw (DEX save) or douse a 5-ft square; fuel for 6 h in a lamp'),
+    I("Navigator's Tools",1,2,0,'WIS · plot a course DC 10, position by stars DC 15'),
+    I('Tinderbox',1,1,0,'Light a lamp/torch as a Bonus Action'),
+    I("Scholar's Pack",1,0,0,'Contents are listed separately: Backpack, Book, Ink, Ink Pen, Lamp, 10 Oil, 10 Parchment, Tinderbox')
+  ];
+}
 function seedMerchant(){
   const c=blankChar();
   Object.assign(c,{name:'צור לב הארי',cls:'Warlock',subclass:'',level:2,species:'Human',background:'Merchant',alignment:'Neutral',xp:'0 / 900',speed:30,
@@ -223,12 +247,7 @@ function seedMerchant(){
     {id:uid(),cat:'bonus',title:'Tinderbox',text:'Light a candle, lamp, lantern, torch or other exposed fuel.'},
     {id:uid(),cat:'reaction',title:'Opportunity Attack',text:'When a creature you can see leaves your reach, make one melee attack against it.'}
   ];
-  c.inventory=[
-    {id:uid(),name:'Sickle',qty:1,wt:2,eq:true,notes:''},{id:uid(),name:'Dagger',qty:2,wt:1,eq:true,notes:''},
-    {id:uid(),name:'Leather Armor',qty:1,wt:10,eq:true,notes:'AC 11 + DEX'},{id:uid(),name:'Backpack',qty:1,wt:5,eq:false,notes:'Holds 30 lb'},
-    {id:uid(),name:"Traveler's Clothes",qty:1,wt:4,eq:true,notes:''},{id:uid(),name:'Lamp',qty:1,wt:1,eq:false,notes:'Burns oil: bright light 15 ft, dim 30 ft more'},
-    {id:uid(),name:"Navigator's Tools",qty:1,wt:2,eq:false,notes:''}
-  ];
+  c.inventory=merchantItems();
   return c;
 }
 function seedGregory(){
@@ -282,7 +301,7 @@ window.addEventListener('storage',e=>{ if(e.key==='dnd24.chars'&&e.newValue){ tr
 const loot={text:LS.get('dnd24.loot','')};
 function syncNote(){ const el=document.getElementById('syncnote'); if(el) el.textContent='📱 Saved on this phone only. Use Share → file to back up a character.'; }
 try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(e){}
-const APP_VERSION='1.4 (level-up choices)';
+const APP_VERSION='1.5 (inventory import)';
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   const hadCtrl=!!navigator.serviceWorker.controller; let reloaded=false;
   navigator.serviceWorker.addEventListener('controllerchange',()=>{ if(hadCtrl&&!reloaded){reloaded=true;location.reload()} });
@@ -721,7 +740,7 @@ async function decodeText(t){
     const bytes=b64d(m[2].replace(/\s/g,''));
     if(m[1]){ const ds=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw')); json=await new Response(ds).text() }
     else json=new TextDecoder().decode(bytes); }
-  const o=JSON.parse(json); const ch=o.char||o; if(!ch||!ch.abilities) throw new Error('Not a character'); return normalize(ch);
+  const o=JSON.parse(json); if(o.items&&!o.char) return {__items:o.items}; const ch=o.char||o; if(!ch||!ch.abilities) throw new Error('Not a character'); return normalize(ch);
 }
 async function exportChar(id){
   const c=chars.find(x=>x.id===id); const code=await encodeChar(c);
@@ -737,7 +756,10 @@ function importSheet(){
 let pendingImport=null;
 async function doImport(){
   try{ let t=document.getElementById('impcode').value; const f=document.getElementById('impfile').files[0]; if(f) t=await f.text();
-    const ch=await decodeText(t); const ex=chars.find(c=>c.id===ch.id)||chars.find(c=>c.name===ch.name);
+    const ch=await decodeText(t);
+    if(ch.__items){ const c=C(); pendingImport={items:ch.__items};
+      sheet(`<h3>Import ${ch.__items.length} items into “${esc(c.name)}”</h3><p class="muted mb">Replace this character's whole inventory, or add the items to it?</p><button class="btn w mb" data-a="itemsreplace">Replace inventory</button><button class="btn o w mb" data-a="itemsadd">Add to inventory</button><button class="btn g w" data-a="close">Cancel</button>`); return }
+    const ex=chars.find(c=>c.id===ch.id)||chars.find(c=>c.name===ch.name);
     const add=()=>{ if(chars.find(c=>c.id===ch.id)) ch.id=uid(); ch.updatedAt=Date.now(); chars.push(ch); curId=ch.id; closeModal(); save(ch); render(); msg('Imported ✓'); };
     if(!ex) return add();
     pendingImport={ch,ex,add};
@@ -785,6 +807,8 @@ const A={
   missforce:()=>{const b=document.getElementById('missbox');b&&b.remove();applyLevelUp(true)},
   undolevel:()=>{const c=C();if(!c._undo)return;confirmBox(`Undo level up? Back to level ${c._undo.level}.`,()=>{const i=chars.indexOf(c);const u=c._undo;u.updatedAt=Date.now();chars[i]=normalize(u)},'Undo')},
   impreplace:()=>{const {ch,ex}=pendingImport;const i=chars.indexOf(ex);ch.id=ex.id;ch.updatedAt=Date.now();chars[i]=ch;curId=ch.id;closeModal();save(ch);render();msg('Updated ✓')},
+  itemsreplace:()=>{const c=C();c.inventory=pendingImport.items.map(i=>Object.assign({},i,{id:uid()}));closeModal();save(c);tab='gear';render();msg('Inventory replaced ✓')},
+  itemsadd:()=>{const c=C();pendingImport.items.forEach(i=>c.inventory.push(Object.assign({},i,{id:uid()})));closeModal();save(c);tab='gear';render();msg('Items added ✓')},
   impboth:()=>{const {ch}=pendingImport;ch.name+=' (copy)';pendingImport.add()},
   copycode:async()=>{const ta=document.getElementById('sharecode');ta.select();let ok=false;try{await navigator.clipboard.writeText(ta.value);ok=true}catch(e){try{ok=document.execCommand('copy')}catch(_){}}msg(ok?'Copied ✓':'Select the text and copy it manually')},
   sharenative:async()=>{const t=document.getElementById('sharecode').value;try{if(!navigator.share)throw 0;await navigator.share({title:'D&D character',text:t})}catch(e){A.copycode()}},
