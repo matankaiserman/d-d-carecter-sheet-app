@@ -373,7 +373,7 @@ function rCombat(c){
   if(c.pact.t>0) h+=`<div class="res"><div class="t">Pact Slots (lvl ${c.pact.lvl})<span>Short or Long Rest</span></div>${pips(c.pact.t,c.pact.u,'pactpip')}</div>`;
   c.resources.forEach(r=>{h+=`<div class="res"><div class="t" dir="auto">${esc(r.name)}<span>${esc(RESETS[r.reset]||'')}${r.note?' · '+esc(r.note):''}</span></div><div class="row">${r.max<=8?pips(r.max,r.max-r.cur,'respip','data-id="'+r.id+'"'):`<div class="ctr"><button data-a="resadj" data-id="${r.id}" data-d="-1">−</button><span>${r.cur}/${r.max}</span><button data-a="resadj" data-id="${r.id}" data-d="1">+</button></div>`}${pencil('editRes','data-id="'+r.id+'"')}</div></div>`});
   if(editing) h+=`<button class="add" data-a="addRes">+ Add resource</button>`;
-  h+=`<div class="g2 mt"><button class="btn o" data-a="short">☕ Short Rest</button><button class="btn o" data-a="long">🌙 Long Rest</button></div></div>`;
+  h+=`<div class="g2 mt"><button class="btn o" data-a="short">☕ Short Rest</button><button class="btn o" data-a="long">🌙 Long Rest</button></div><button class="btn g w mt" data-a="levelup">⬆ Level Up</button></div>`;
   h+=`<div class="card"><h2>ATTACKS & DAMAGE</h2>`+c.attacks.map(a=>atkRow(c,a)).join('')+(editing?`<button class="add" data-a="addAtk">+ Add attack</button>`:'')+`</div>`;
   return h;
 }
@@ -432,6 +432,7 @@ function rGear(c){
 function rNotes(c){
   const ta=(k,l,r)=>`<div class="card"><h2>${l}</h2><textarea rows="${r}" dir="auto" data-bind="notes.${k}">${esc(c.notes[k])}</textarea></div>`;
   return `<div class="card"><h2>IDENTITY <span class="tools"><button class="pencil" data-a="editBasics">✎</button></span></h2><div class="small" style="line-height:1.7" dir="auto">
+  <button class="btn w mb" data-a="levelup">⬆ Level Up</button>${c._undo?`<button class="btn g sm w mb" data-a="undolevel">↶ Undo last level up (back to ${c._undo.level})</button>`:''}
   <div><b>Class:</b> ${esc(c.cls)} ${c.level}${c.subclass?' — '+esc(c.subclass):''}</div><div><b>Species:</b> ${esc(c.species)}</div><div><b>Background:</b> ${esc(c.background)}</div><div><b>Alignment:</b> ${esc(c.alignment)||'—'}</div><div><b>XP:</b> ${esc(c.xp)||'—'}</div></div></div>`
   +ta('appearance','APPEARANCE',3)+ta('personality','PERSONALITY, IDEALS, BONDS, FLAWS',4)+ta('backstory','BACKSTORY',6)+ta('notes','SESSION NOTES',8);
 }
@@ -481,6 +482,72 @@ function editList(listName,schema,id,title){ const c=C(); const it=c[listName].f
   openForm(title,it,schema,null,()=>confirmBox('Delete "'+(it.name||it.title)+'"?',()=>{c[listName]=c[listName].filter(x=>x!==it)}));}
 function addList(listName,schema,proto,title){ const c=C(); const it=Object.assign({id:uid()},proto); openForm(title,it,schema,o=>c[listName].push(o)); }
 
+
+/* ================= level up (2024 rules, offline) ================= */
+const HD={barbarian:12,fighter:10,paladin:10,ranger:10,bard:8,cleric:8,druid:8,monk:8,rogue:8,warlock:8,sorcerer:6,wizard:6};
+const FULL=[[],[2],[3],[4,2],[4,3],[4,3,2],[4,3,3],[4,3,3,1],[4,3,3,2],[4,3,3,3,1],[4,3,3,3,2],[4,3,3,3,2,1],[4,3,3,3,2,1],[4,3,3,3,2,1,1],[4,3,3,3,2,1,1],[4,3,3,3,2,1,1,1],[4,3,3,3,2,1,1,1],[4,3,3,3,2,1,1,1,1],[4,3,3,3,3,1,1,1,1],[4,3,3,3,3,2,1,1,1],[4,3,3,3,3,2,2,1,1]];
+const CASTER={bard:'full',cleric:'full',druid:'full',sorcerer:'full',wizard:'full',paladin:'half',ranger:'half'};
+const T=(arr,l)=>arr[Math.min(arr.length,l)-1];
+const WARLOCK={slots:l=>l<2?1:l<11?2:l<17?3:4, slotLvl:l=>Math.min(5,Math.ceil(l/2)),
+  inv:[1,3,3,3,5,5,6,6,7,7,7,8,8,8,9,9,9,10,10,10], prep:[2,3,4,5,6,7,8,9,10,10,11,11,12,12,13,13,14,14,15,15], cant:[2,2,2,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4]};
+const FEATS={
+ warlock:{2:['Magical Cunning'],3:['Warlock Subclass (choose patron)'],4:['Ability Score Improvement or feat'],6:['Subclass feature'],8:['Ability Score Improvement or feat'],9:['Contact Patron'],10:['Subclass feature'],11:['Mystic Arcanum (level 6 spell)'],12:['Ability Score Improvement or feat'],13:['Mystic Arcanum (level 7 spell)'],14:['Subclass feature'],15:['Mystic Arcanum (level 8 spell)'],16:['Ability Score Improvement or feat'],17:['Mystic Arcanum (level 9 spell)'],19:['Epic Boon feat'],20:['Eldritch Master']},
+ barbarian:{2:['Danger Sense','Reckless Attack'],3:['Barbarian Subclass (choose path)','Primal Knowledge'],4:['Ability Score Improvement or feat'],5:['Extra Attack','Fast Movement'],6:['Subclass feature'],7:['Feral Instinct','Instinctive Pounce'],8:['Ability Score Improvement or feat'],9:['Brutal Strike'],10:['Subclass feature'],11:['Relentless Rage'],12:['Ability Score Improvement or feat'],13:['Improved Brutal Strike'],14:['Subclass feature'],15:['Persistent Rage'],16:['Ability Score Improvement or feat'],17:['Improved Brutal Strike'],18:['Indomitable Might'],19:['Epic Boon feat'],20:['Primal Champion']}
+};
+function genericFeats(cls,l){const o=[];if(l===3)o.push('Subclass');if([4,8,12,16].includes(l)||(cls==='fighter'&&[6,14].includes(l))||(cls==='rogue'&&l===10))o.push('Ability Score Improvement or feat');if(l===19)o.push('Epic Boon feat');if(cls==='fighter'&&[5,11,20].includes(l))o.push('Extra Attack');o.push('Check your class table for features at this level');return o}
+const clsKey=c=>(c.cls||'').trim().toLowerCase().split(/\s+/)[0];
+let lu=null;
+function levelUpPlan(c){
+  const k=clsKey(c), nl=num(c.level)+1, die=HD[k]||Number(String(c.hd.die).slice(1))||8;
+  const tough=c.features.some(f=>/^tough\b/i.test(f.title||''));
+  const pbNew=2+Math.floor((nl-1)/4), changes=[], todo=[];
+  if(pbNew>pb(c)) changes.push(`Proficiency Bonus ${fmt(pb(c))} → ${fmt(pbNew)}`);
+  if(k==='warlock'){ const t=WARLOCK.slots(nl),sl=WARLOCK.slotLvl(nl); if(t!==c.pact.t||sl!==c.pact.lvl) changes.push(`Pact slots: ${t} × level ${sl}`);
+    const i0=T(WARLOCK.inv,nl-1),i1=T(WARLOCK.inv,nl); if(i1>i0) todo.push(`Choose ${i1-i0} new Eldritch Invocation${i1-i0>1?'s':''} (total ${i1})`);
+    const p0=T(WARLOCK.prep,nl-1),p1=T(WARLOCK.prep,nl); if(p1>p0) todo.push(`Prepare ${p1-p0} more spell${p1-p0>1?'s':''} (total ${p1}, up to level ${WARLOCK.slotLvl(nl)})`);
+    const c0=T(WARLOCK.cant,nl-1),c1=T(WARLOCK.cant,nl); if(c1>c0) todo.push('Learn 1 new cantrip');
+    todo.push('Optional: swap one invocation and one prepared spell'); }
+  if(CASTER[k]){ const row=FULL[CASTER[k]==='full'?nl:Math.ceil(nl/2)]||[]; changes.push('Spell slots: '+(row.map((n,i)=>`L${i+1}×${n}`).join(' ')||'none')); todo.push('Update prepared spells / cantrips for your class table'); }
+  c.resources.forEach(r=>{ let m=null;
+    if(/luck/i.test(r.name)||/adrenaline/i.test(r.name)) m=pbNew;
+    else if(k==='barbarian'&&/^rage/i.test(r.name)) m=nl<3?2:nl<6?3:nl<12?4:nl<17?5:6;
+    if(m!=null&&m!==r.max) changes.push(`${r.name}: max ${r.max} → ${m}`) });
+  if(k==='barbarian'){ const rd=nl<9?2:nl<16?3:4; c.modes.forEach(m=>{if(/rage/i.test(m.name)&&num(m.dmgBonus)!==rd)changes.push(`Rage damage +${m.dmgBonus} → +${rd}`)});
+    if([4,10].includes(nl)) todo.push('Gain 1 more Weapon Mastery'); }
+  const feats=(FEATS[k]&&FEATS[k][nl])||(!FEATS[k]?genericFeats(k,nl):[]);
+  return {k,nl,die,tough,pbNew,changes,todo,feats};
+}
+function luSheet(){
+  const c=C(), p=levelUpPlan(c), con=am(c,'con');
+  const avg=Math.floor(p.die/2)+1, base=lu.mode==='roll'?lu.roll:avg, extra=num(lu.extra), gain=Math.max(1,base+con)+extra;
+  sheet(`<h3>⬆ Level Up: ${esc(c.cls||'Class')} ${c.level} → ${p.nl}</h3>
+  ${HD[p.k]?'':`<p class="muted mb">Class “${esc(c.cls)}” isn't recognized — HP and Hit Dice will still update; check your class table for the rest.</p>`}
+  <div class="card"><h2>HIT POINTS</h2>
+   <div class="g2"><button class="btn ${lu.mode==='avg'?'':'g'}" data-a="luavg">Average: ${avg}</button><button class="btn ${lu.mode==='roll'?'':'g'}" data-a="luroll">${lu.mode==='roll'?'Rolled d'+p.die+': '+lu.roll+' (reroll)':'Roll d'+p.die}</button></div>
+   <div class="fld mt"><label>Extra HP this level (Tough = 2)</label><input type="number" inputmode="numeric" id="luextra" value="${extra}"></div>
+   <div class="res"><div class="t">HP gained<span>${base} ${fmt(con)} CON${extra?' '+fmt(extra)+' extra':''}</span></div><b style="font-size:1.4rem">+${gain}</b></div>
+   <div class="muted">Max HP ${c.hp.max} → ${c.hp.max+gain} · Hit Dice ${c.hd.total} → ${c.hd.total+1}</div></div>
+  ${p.changes.length?`<div class="card"><h2>UPDATED AUTOMATICALLY</h2>${p.changes.map(x=>`<div class="small mb">✓ ${esc(x)}</div>`).join('')}</div>`:''}
+  <div class="card"><h2>YOUR CHOICES AT LEVEL ${p.nl}</h2>${[...p.feats.map(f=>'★ '+f),...p.todo.map(t=>'☐ '+t)].map(x=>`<div class="small mb">${esc(x)}</div>`).join('')||'<div class="muted">Nothing new to choose.</div>'}
+   <div class="muted">New features are added to the Features tab as placeholders. Fill them in with ✎ Edit.</div></div>
+  <div class="g2"><button class="btn g" data-a="close">Cancel</button><button class="btn" data-a="ludo">Level Up!</button></div>`);
+}
+function applyLevelUp(){
+  const c=C(), p=levelUpPlan(c), con=am(c,'con');
+  const base=lu.mode==='roll'?lu.roll:Math.floor(p.die/2)+1, gain=Math.max(1,base+con)+num(lu.extra);
+  const snap=JSON.parse(JSON.stringify(c)); delete snap._undo;
+  c.level=p.nl; c.hp.max+=gain; c.hp.cur+=gain; c.hd.total+=1;
+  if(p.k==='warlock'){ c.pact.t=WARLOCK.slots(p.nl); c.pact.lvl=WARLOCK.slotLvl(p.nl); c.pact.u=Math.min(c.pact.u,c.pact.t) }
+  if(CASTER[p.k]){ const row=FULL[CASTER[p.k]==='full'?p.nl:Math.ceil(p.nl/2)]||[]; for(let l=1;l<=9;l++){c.slots[l].t=row[l-1]||0;c.slots[l].u=Math.min(c.slots[l].u,c.slots[l].t)} }
+  c.resources.forEach(r=>{ let m=null;
+    if(/luck/i.test(r.name)||/adrenaline/i.test(r.name)) m=p.pbNew; else if(p.k==='barbarian'&&/^rage/i.test(r.name)) m=p.nl<3?2:p.nl<6?3:p.nl<12?4:p.nl<17?5:6;
+    if(m!=null){ r.cur+=Math.max(0,m-r.max); r.max=m; } });
+  if(p.k==='barbarian') c.modes.forEach(m=>{if(/rage/i.test(m.name))m.dmgBonus=p.nl<9?2:p.nl<16?3:4});
+  p.feats.filter(f=>!/Ability Score|Check your class|Subclass feature/i.test(f)).forEach(f=>c.features.push({id:uid(),cat:'class',title:f,text:`Gained at level ${p.nl}. Tap ✎ Edit to add the rules text.`}));
+  c._undo=snap; closeModal(); save(c); render();
+  showToast('Level Up!',`Level ${p.nl}`,`+${gain} HP · ${p.todo.length+p.feats.length} things to choose`,'n20');
+}
+
 /* ================= roster / share ================= */
 function rosterHTML(){
   return `<h3>Characters</h3>`+chars.map(c=>`<div class="charrow ${c.id===curId?'cur':''}"><div class="info" data-a="pick" data-id="${c.id}"><b dir="auto">${esc(c.name)}</b><span class="muted">Lvl ${c.level} ${esc(c.species)} ${esc(c.cls)}</span></div>
@@ -490,7 +557,7 @@ function rosterHTML(){
 function b64e(bytes){let s='';bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 function b64d(str){const s=atob(str);return Uint8Array.from(s,ch=>ch.charCodeAt(0))}
 async function encodeChar(c){
-  const json=JSON.stringify({app:'dnd24',v:1,char:c}); const raw=new TextEncoder().encode(json);
+  const json=JSON.stringify({app:'dnd24',v:1,char:Object.assign({},c,{_undo:undefined})}); const raw=new TextEncoder().encode(json);
   try{ if(window.CompressionStream){ const cs=new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw')); const buf=new Uint8Array(await new Response(cs).arrayBuffer()); return 'DND24z:'+b64e(buf) } }catch(e){}
   return 'DND24:'+b64e(raw);
 }
@@ -540,20 +607,25 @@ const A={
   roster:()=>{sheet(rosterHTML());syncNote()},
   pick:el=>{curId=el.dataset.id;save(null);closeModal();render()},
   newchar:()=>{const c=blankChar();chars.push(c);curId=c.id;save(c);closeModal();editing=true;tab='combat';render();A.editBasics()},
-  charmenu:el=>{const c=findIn(chars,el.dataset.id);sheet(`<h3 dir="auto">${esc(c.name)}</h3><button class="btn g w mb" data-a="dupchar" data-id="${c.id}">Duplicate</button><button class="btn r w mb" data-a="delchar" data-id="${c.id}">Delete</button><button class="btn o w" data-a="roster">Back</button>`)},
+  charmenu:el=>{const c=findIn(chars,el.dataset.id);sheet(`<h3 dir="auto">${esc(c.name)}</h3>${c.id===curId?'<button class="btn w mb" data-a="levelup">⬆ Level Up</button>':''}<button class="btn g w mb" data-a="dupchar" data-id="${c.id}">Duplicate</button><button class="btn r w mb" data-a="delchar" data-id="${c.id}">Delete</button><button class="btn o w" data-a="roster">Back</button>`)},
   dupchar:el=>{const c=JSON.parse(JSON.stringify(findIn(chars,el.dataset.id)));c.id=uid();c.name+=' (copy)';chars.push(c);save(c);sheet(rosterHTML());syncNote()},
   delchar:el=>{const id=el.dataset.id;const c=findIn(chars,id);confirmBox(`Delete ${c.name}? This can't be undone (export it first if unsure).`,()=>{chars=chars.filter(x=>x.id!==id);if(!chars.length)chars.push(blankChar());if(curId===id)curId=chars[0].id})},
   export:el=>exportChar(el.dataset.id),
   import:importSheet, doimport:doImport,
+  levelup:()=>{closeModal();const c=C();if(num(c.level)>=20)return msg('Already level 20');const p=levelUpPlan(c);lu={mode:'avg',roll:0,extra:p.tough?2:0};luSheet()},
+  luavg:()=>{lu.extra=num(document.getElementById('luextra').value);lu.mode='avg';luSheet()},
+  luroll:()=>{const p=levelUpPlan(C());lu.extra=num(document.getElementById('luextra').value);lu.mode='roll';lu.roll=d(p.die);luSheet()},
+  ludo:()=>{lu.extra=num(document.getElementById('luextra').value);applyLevelUp()},
+  undolevel:()=>{const c=C();if(!c._undo)return;confirmBox(`Undo level up? Back to level ${c._undo.level}.`,()=>{const i=chars.indexOf(c);const u=c._undo;u.updatedAt=Date.now();chars[i]=normalize(u)},'Undo')},
   impreplace:()=>{const {ch,ex}=pendingImport;const i=chars.indexOf(ex);ch.id=ex.id;ch.updatedAt=Date.now();chars[i]=ch;curId=ch.id;closeModal();save(ch);render();msg('Updated ✓')},
   impboth:()=>{const {ch}=pendingImport;ch.name+=' (copy)';pendingImport.add()},
   copycode:async()=>{const ta=document.getElementById('sharecode');ta.select();let ok=false;try{await navigator.clipboard.writeText(ta.value);ok=true}catch(e){try{ok=document.execCommand('copy')}catch(_){}}msg(ok?'Copied ✓':'Select the text and copy it manually')},
   sharenative:async()=>{const t=document.getElementById('sharecode').value;try{if(!navigator.share)throw 0;await navigator.share({title:'D&D character',text:t})}catch(e){A.copycode()}},
-  sharefile:async el=>{const c=findIn(chars,el.dataset.id);const data=JSON.stringify({app:'dnd24',v:1,char:c});const fn=(c.name||'character').replace(/[^\w\u0590-\u05FF -]/g,'')+'.json';
+  sharefile:async el=>{const c=findIn(chars,el.dataset.id);const data=JSON.stringify({app:'dnd24',v:1,char:Object.assign({},c,{_undo:undefined})});const fn=(c.name||'character').replace(/[^\w\u0590-\u05FF -]/g,'')+'.json';
     try{const f=new File([data],fn,{type:'application/json'});if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:c.name});return}
       if(navigator.share){await navigator.share({title:c.name,text:document.getElementById('sharecode').value});return}}catch(e){if(e&&e.name==='AbortError')return}
     A.dlfile(el)},
-  dlfile:async el=>{const c=findIn(chars,el.dataset.id);const data=JSON.stringify({app:'dnd24',v:1,char:c},null,1);const fn=(c.name||'character').replace(/[^\w֐-׿ -]/g,'')+'.json';
+  dlfile:async el=>{const c=findIn(chars,el.dataset.id);const data=JSON.stringify({app:'dnd24',v:1,char:Object.assign({},c,{_undo:undefined})},null,1);const fn=(c.name||'character').replace(/[^\w֐-׿ -]/g,'')+'.json';
     try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type:'application/json'}));a.download=fn;document.body.appendChild(a);a.click();a.remove()}catch(e){msg('Download blocked — use Copy code')}},
   editBasics:()=>{const c=C();openForm('Character basics',c,F.basics,()=>{c.hp.cur=Math.min(c.hp.cur,c.hp.max);c.hd.used=Math.min(c.hd.used,c.hd.total)})},
   editAbil:()=>openForm('Ability scores (base)',C(),F.abil),
