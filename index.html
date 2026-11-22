@@ -278,10 +278,11 @@ let saveT=null;
 function save(c=C()){ if(c) c.updatedAt=Date.now(); LS.set('dnd24.chars',chars); LS.set('dnd24.cur',curId); }
 
 /* ================= local-only storage helpers ================= */
+window.addEventListener('storage',e=>{ if(e.key==='dnd24.chars'&&e.newValue){ try{ chars=JSON.parse(e.newValue).map(normalize); if(!chars.find(c=>c.id===curId)) curId=chars[0].id; render() }catch(_){} } });
 const loot={text:LS.get('dnd24.loot','')};
 function syncNote(){ const el=document.getElementById('syncnote'); if(el) el.textContent='📱 Saved on this phone only. Use Share → file to back up a character.'; }
 try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(e){}
-const APP_VERSION='1.3 (spell picker)';
+const APP_VERSION='1.4 (level-up choices)';
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   const hadCtrl=!!navigator.serviceWorker.controller; let reloaded=false;
   navigator.serviceWorker.addEventListener('controllerchange',()=>{ if(hadCtrl&&!reloaded){reloaded=true;location.reload()} });
@@ -503,64 +504,172 @@ const FEATS={
 function genericFeats(cls,l){const o=[];if(l===3)o.push('Subclass');if([4,8,12,16].includes(l)||(cls==='fighter'&&[6,14].includes(l))||(cls==='rogue'&&l===10))o.push('Ability Score Improvement or feat');if(l===19)o.push('Epic Boon feat');if(cls==='fighter'&&[5,11,20].includes(l))o.push('Extra Attack');o.push('Check your class table for features at this level');return o}
 const clsKey=c=>(c.cls||'').trim().toLowerCase().split(/\s+/)[0];
 let lu=null;
-function levelUpPlan(c){
-  const k=clsKey(c), nl=num(c.level)+1, die=HD[k]||Number(String(c.hd.die).slice(1))||8;
-  const tough=c.features.some(f=>/^tough\b/i.test(f.title||''));
-  const pbNew=2+Math.floor((nl-1)/4), changes=[], todo=[];
-  if(pbNew>pb(c)) changes.push(`Proficiency Bonus ${fmt(pb(c))} → ${fmt(pbNew)}`);
-  if(k==='warlock'){ const t=WARLOCK.slots(nl),sl=WARLOCK.slotLvl(nl); if(t!==c.pact.t||sl!==c.pact.lvl) changes.push(`Pact slots: ${t} × level ${sl}`);
-    const i0=T(WARLOCK.inv,nl-1),i1=T(WARLOCK.inv,nl); if(i1>i0) todo.push(`Choose ${i1-i0} new Eldritch Invocation${i1-i0>1?'s':''} (total ${i1})`);
-    const p0=T(WARLOCK.prep,nl-1),p1=T(WARLOCK.prep,nl); if(p1>p0) todo.push(`Prepare ${p1-p0} more spell${p1-p0>1?'s':''} (total ${p1}, up to level ${WARLOCK.slotLvl(nl)})`);
-    const c0=T(WARLOCK.cant,nl-1),c1=T(WARLOCK.cant,nl); if(c1>c0) todo.push('Learn 1 new cantrip');
-    todo.push('Optional: swap one invocation and one prepared spell'); }
-  if(CASTER[k]){ const row=FULL[CASTER[k]==='full'?nl:Math.ceil(nl/2)]||[]; changes.push('Spell slots: '+(row.map((n,i)=>`L${i+1}×${n}`).join(' ')||'none')); todo.push('Update prepared spells / cantrips for your class table'); }
+
+/* ===== level-up wizard driven by the SRD 5.2.1 rules database (rules.json) ===== */
+let RULES=null;
+async function loadRules(){ if(RULES) return RULES; const r=await fetch('rules.json'); RULES=await r.json(); return RULES; }
+const hasFeat=(c,name)=>c.features.some(f=>(f.title||'').toLowerCase().includes(name.toLowerCase()));
+const CHOICE_FEATS=/^(Ability Score Improvement|Epic Boon|Fighting Style|Additional Fighting Style|Expertise|Metamagic|Mystic Arcanum|Eldritch Invocations|Weapon Mastery)$/;
+function plan(c){
+  const k=clsKey(c), nl=num(c.level)+1, R=RULES&&RULES.classes[k];
+  const p={k,nl,R,die:R?R.hd:(HD[k]||Number(String(c.hd.die).slice(1))||8),pbNew:2+Math.floor((nl-1)/4),add:[],choices:[],changes:[],spells:null};
+  p.tough=c.features.some(f=>/^tough\b/i.test(f.title||''));
+  if(p.pbNew>pb(c)) p.changes.push(`Proficiency Bonus ${fmt(pb(c))} → ${fmt(p.pbNew)}`);
+  if(!R) return p;
+  const L0=R.levels[nl-1]||{cs:{}}, L1=R.levels[nl]; if(!L1) return p;
+  const subName=R.sub?R.sub.name:'', mySub=(c.subclass||'').trim(), isSrdSub=mySub&&subName&&mySub.toLowerCase()===subName.toLowerCase();
+  const featText=(n)=>{const t=R.feat[n]; if(!t) return ''; return t[nl]||t[Object.keys(t)[0]]};
+  L1.f.forEach(n=>{
+    if(/Subclass$/.test(n)){
+      if(!mySub) p.choices.push({t:'sub'});
+      else if(isSrdSub) (R.sub.feat[nl]||[]).forEach(f=>p.add.push({cat:'class',title:f.name+' ('+subName+')',text:f.text}));
+      else p.add.push({cat:'class',title:`${mySub}: subclass feature (level ${nl})`,text:'Add the rules text from your book with ✎ Edit.'});
+      return; }
+    if(n==='Ability Score Improvement') return p.choices.push({t:'asi',boon:false});
+    if(n==='Epic Boon') return p.choices.push({t:'asi',boon:true});
+    if(n==='Fighting Style') return p.choices.push({t:'fs'});
+    if(n==='Expertise') return p.choices.push({t:'exp',n:2});
+    if(n==='Metamagic') return p.choices.push({t:'meta',n:2});
+    if(n==='Mystic Arcanum') return p.choices.push({t:'arc',lvl:{11:6,13:7,15:8,17:9}[nl]});
+    if(CHOICE_FEATS.test(n)) return;
+    const txt=R.feat[n]&&R.feat[n][nl]; const exists=hasFeat(c,n);
+    if(exists&&!(txt&&Object.keys(R.feat[n]).length>1)) return;
+    p.add.push({cat:'class',title:exists?`${n} (level ${nl})`:n,text:featText(n)});
+  });
+  // subclass chosen now: features of this level come from the choice (handled at apply)
+  const inv=(L1.cs.eldritch_invocations||0)-(L0.cs.eldritch_invocations||0); if(inv>0) p.choices.push({t:'inv',n:inv});
+  const wm=(L1.cs.weapon_mastery||0)-(L0.cs.weapon_mastery||0); if(wm>0) p.choices.push({t:'wm',n:wm});
+  if(isSrdSub) (R.sub.feat[nl]||[]).forEach(f=>{ if(/Fighting Style/.test(f.name)) p.choices.push({t:'fs'}) });
+  // spells
+  if(L1.slots){ if(k==='warlock'){const t=L1.slots.reduce((a,b)=>a+b,0),lv=L1.slots.findIndex(x=>x>0)+1; if(t!==c.pact.t||lv!==c.pact.lvl) p.changes.push(`Pact slots: ${t} × level ${lv}`); p.pact={t,lv}}
+    else { const row=L1.slots; p.slots=row; p.changes.push('Spell slots: '+row.map((n,i)=>n?`L${i+1}×${n}`:'').filter(Boolean).join(' ')) } }
+  const dc=(L1.cant||0)-(L0.cant||0), dp=(L1.prep||0)-(L0.prep||0); if(dc>0||dp>0) p.spells={dc,dp,cant:L1.cant,prep:L1.prep};
+  // resources
+  const cs=L1.cs; p.res=[];
   c.resources.forEach(r=>{ let m=null;
-    if(/luck/i.test(r.name)||/adrenaline/i.test(r.name)) m=pbNew;
-    else if(k==='barbarian'&&/^rage/i.test(r.name)) m=nl<3?2:nl<6?3:nl<12?4:nl<17?5:6;
-    if(m!=null&&m!==r.max) changes.push(`${r.name}: max ${r.max} → ${m}`) });
-  if(k==='barbarian'){ const rd=nl<9?2:nl<16?3:4; c.modes.forEach(m=>{if(/rage/i.test(m.name)&&num(m.dmgBonus)!==rd)changes.push(`Rage damage +${m.dmgBonus} → +${rd}`)});
-    if([4,10].includes(nl)) todo.push('Gain 1 more Weapon Mastery'); }
-  const feats=(FEATS[k]&&FEATS[k][nl])||(!FEATS[k]?genericFeats(k,nl):[]);
-  return {k,nl,die,tough,pbNew,changes,todo,feats};
+    if(/luck|adrenaline/i.test(r.name)) m=p.pbNew; else if(/^rage/i.test(r.name)&&cs.rage_count) m=cs.rage_count;
+    else if(/sorcery/i.test(r.name)&&cs.sorcery_points!=null) m=cs.sorcery_points; else if(/second wind/i.test(r.name)&&cs.second_wind_uses) m=cs.second_wind_uses;
+    if(m!=null&&m!==r.max){p.changes.push(`${r.name}: max ${r.max} → ${m}`);p.res.push([r.id,m])} });
+  if(cs.sorcery_points&&!c.resources.some(r=>/sorcery/i.test(r.name))){p.changes.push(`Sorcery Points: ${cs.sorcery_points}`);p.newRes={name:'Sorcery Points',cur:cs.sorcery_points,max:cs.sorcery_points,reset:'long',note:'Font of Magic'}}
+  if(cs.rage_damage_bonus) c.modes.forEach(m=>{if(/rage/i.test(m.name)&&num(m.dmgBonus)!==cs.rage_damage_bonus){p.changes.push(`Rage damage +${m.dmgBonus} → +${cs.rage_damage_bonus}`);p.rageDmg=cs.rage_damage_bonus}});
+  return p;
 }
-function luSheet(){
-  const c=C(), p=levelUpPlan(c), con=am(c,'con');
-  const avg=Math.floor(p.die/2)+1, base=lu.mode==='roll'?lu.roll:avg, extra=num(lu.extra), gain=Math.max(1,base+con)+extra;
+const opt=(v,l,sel)=>`<option value="${esc(v)}" ${String(sel)===String(v)?'selected':''}>${esc(l)}</option>`;
+const abSel=(key,val,ex)=>`<select data-lu="${key}">${opt('','— ability —',val)}${ABIL.filter(a=>!ex||ex.includes(a)).map(a=>opt(a,ABN[a]+' ('+score(C(),a)+')',val)).join('')}</select>`;
+function pickRow(group,name,on,label,sub,text,disabled){
+  return `<div class="item" style="${on?'border-color:var(--accent)':''}${disabled?';opacity:.5':''}"><div class="hd"><div style="flex:1;min-width:0"><div class="nm">${esc(label||name)}</div>${sub?`<div class="meta">${esc(sub)}</div>`:''}</div>
+   ${disabled?`<span class="muted">${esc(disabled)}</span>`:`<button class="btn sm ${on?'':'g'}" data-a="lupick" data-g="${group}" data-v="${esc(name)}">${on?'✓ Chosen':'Choose'}</button>`}</div>
+   ${text?`<details><summary class="muted" style="margin-top:6px">Read more</summary><div class="desc">${esc(text)}</div></details>`:''}</div>`;
+}
+function choiceHTML(c,p,ch){
+  const R=p.R;
+  if(ch.t==='sub'){ const sn=R.sub?R.sub.name:''; return `<div class="card"><h2>CHOOSE YOUR SUBCLASS</h2>
+     ${sn?pickRow('sub',sn,lu.sub===sn,sn,'From the SRD',R.sub.desc+'\n\n'+(R.sub.feat[p.nl]||[]).map(f=>f.name+': '+f.text).join('\n\n')):''}
+     ${pickRow('sub','__other',lu.sub==='__other','Another subclass (from your book)','Type its name below')}
+     ${lu.sub==='__other'?`<input data-lut="subOther" placeholder="e.g. Great Old One Patron" value="${esc(lu.subOther||'')}">`:''}</div>`; }
+  if(ch.t==='asi'){ const feats=RULES.feats.filter(f=>(ch.boon?f.cat==='epic boon':(f.cat==='general'||f.cat==='origin'))&&f.name!=='Ability Score Improvement'&&(f.rep||!hasFeat(c,f.name)));
+    return `<div class="card"><h2>${ch.boon?'EPIC BOON':'ABILITY SCORE IMPROVEMENT / FEAT'}</h2>
+     ${ch.boon?'':pickRow('asi','asi2',lu.asi==='asi2','+2 to one ability')+(lu.asi==='asi2'?abSel('a1',lu.a1):'')+pickRow('asi','asi11',lu.asi==='asi11','+1 to two abilities')+(lu.asi==='asi11'?`<div class="g2">${abSel('a1',lu.a1)}${abSel('a2',lu.a2)}</div>`:'')}
+     ${feats.map(f=>pickRow('asi','feat:'+f.name,lu.asi==='feat:'+f.name,f.name,(f.cat==='origin'?'Origin feat':f.cat==='epic boon'?'Epic Boon':'General feat')+(f.pre?' · Prerequisite: '+f.pre:''),f.text)+(lu.asi==='feat:'+f.name&&f.ab.length?`<div class="fld"><label>+1 from this feat (max ${f.max})</label>${abSel('fa',lu.fa,f.ab)}</div>`:'')).join('')}
+     ${pickRow('asi','__other',lu.asi==='__other','Another feat (from your book)','Type its name below')}
+     ${lu.asi==='__other'?`<input data-lut="featOther" placeholder="Feat name" value="${esc(lu.featOther||'')}">`:''}</div>`; }
+  if(ch.t==='fs'){ const fs=RULES.feats.filter(f=>f.cat==='fighting style'&&!hasFeat(c,f.name));
+    return `<div class="card"><h2>FIGHTING STYLE</h2>${fs.map(f=>pickRow('fs',f.name,lu.fs===f.name,f.name,'',f.text)).join('')}</div>`; }
+  if(ch.t==='inv'){ const known=n=>hasFeat(c,n); const sel=lu.inv;
+    const rows=RULES.inv.map(i=>{ let dis='';
+      if(i.lvl>p.nl) dis='Level '+i.lvl+'+'; else if(i.req&&!known(i.req)&&!sel.includes(i.req)) dis='Needs '+i.req; else if(known(i.name)&&!i.rep) dis='✓ Known';
+      return pickRow('inv',i.name,sel.includes(i.name),i.name,i.pre?'Prerequisite: '+i.pre:'',i.text,dis)}).sort((a,b)=>(a.includes('opacity')?1:0)-(b.includes('opacity')?1:0));
+    return `<div class="card"><h2>ELDRITCH INVOCATIONS <span class="tools">${sel.length}/${ch.n}</span></h2><div class="muted mb">Choose ${ch.n}.</div>${rows.join('')}</div>`; }
+  if(ch.t==='meta'){ return `<div class="card"><h2>METAMAGIC <span class="tools">${lu.meta.length}/${ch.n}</span></h2>${RULES.meta.map(m=>pickRow('meta',m.name,lu.meta.includes(m.name),m.name,'',m.text,hasFeat(c,m.name)?'✓ Known':'')).join('')}</div>`; }
+  if(ch.t==='exp'){ const prof=SKILLS.filter(([k])=>num(c.skills[k])===1); const list=prof.length?prof:SKILLS;
+    return `<div class="card"><h2>EXPERTISE <span class="tools">${lu.exp.length}/${ch.n}</span></h2><div class="muted mb">Double proficiency in ${ch.n} skills you're proficient in.</div>${list.map(([k,n,a])=>pickRow('exp',k,lu.exp.includes(k),n,a.toUpperCase())).join('')}</div>`; }
+  if(ch.t==='wm'){ return `<div class="card"><h2>WEAPON MASTERY <span class="tools">${lu.wm.length}/${ch.n}</span></h2><div class="muted mb">Learn the mastery property of ${ch.n} more weapon${ch.n>1?'s':''}.</div>${RULES.weapons.filter(w=>!hasFeat(c,'Weapon Mastery: '+w.name)).map(w=>pickRow('wm',w.name,lu.wm.includes(w.name),w.name,w.m)).join('')}</div>`; }
+  if(ch.t==='arc'){ const list=(SPELLDB||[]).filter(x=>x[1]===ch.lvl&&x[3].includes('warlock'));
+    return `<div class="card"><h2>MYSTIC ARCANUM — LEVEL ${ch.lvl} SPELL</h2>${list.map(x=>pickRow('arc',x[0],lu.arc===x[0],x[0],x[2]+' · '+x[4],x[10])).join('')||'<div class="muted">Spell list not loaded.</div>'}</div>`; }
+  return '';
+}
+function luSheet(keepScroll){
+  const c=C(), p=plan(c), con=am(c,'con'), ov=document.querySelector('#modal .sheet'), st=keepScroll&&ov?ov.scrollTop:0;
+  const avg=Math.floor(p.die/2)+1, base=lu.mode==='roll'?lu.roll:avg, gain=Math.max(1,base+con)+num(lu.extra);
   sheet(`<h3>⬆ Level Up: ${esc(c.cls||'Class')} ${c.level} → ${p.nl}</h3>
-  ${HD[p.k]?'':`<p class="muted mb">Class “${esc(c.cls)}” isn't recognized — HP and Hit Dice will still update; check your class table for the rest.</p>`}
+  ${p.R?'':`<p class="muted mb">Class “${esc(c.cls)}” isn't one of the 12 core classes, or the rules database hasn't loaded (open the app once with internet). HP and Hit Dice still update.</p>`}
   <div class="card"><h2>HIT POINTS</h2>
    <div class="g2"><button class="btn ${lu.mode==='avg'?'':'g'}" data-a="luavg">Average: ${avg}</button><button class="btn ${lu.mode==='roll'?'':'g'}" data-a="luroll">${lu.mode==='roll'?'Rolled d'+p.die+': '+lu.roll+' (reroll)':'Roll d'+p.die}</button></div>
-   <div class="fld mt"><label>Extra HP this level (Tough = 2)</label><input type="number" inputmode="numeric" id="luextra" value="${extra}"></div>
-   <div class="res"><div class="t">HP gained<span>${base} ${fmt(con)} CON${extra?' '+fmt(extra)+' extra':''}</span></div><b style="font-size:1.4rem">+${gain}</b></div>
-   <div class="muted">Max HP ${c.hp.max} → ${c.hp.max+gain} · Hit Dice ${c.hd.total} → ${c.hd.total+1}</div></div>
-  ${p.changes.length?`<div class="card"><h2>UPDATED AUTOMATICALLY</h2>${p.changes.map(x=>`<div class="small mb">✓ ${esc(x)}</div>`).join('')}</div>`:''}
-  <div class="card"><h2>YOUR CHOICES AT LEVEL ${p.nl}</h2>${[...p.feats.map(f=>'★ '+f),...p.todo.map(t=>'☐ '+t)].map(x=>`<div class="small mb">${esc(x)}</div>`).join('')||'<div class="muted">Nothing new to choose.</div>'}
-   <div class="muted">New features are added to the Features tab as placeholders. Fill them in with ✎ Edit.</div></div>
+   <div class="fld mt"><label>Extra HP this level (Tough = 2)</label><input type="number" inputmode="numeric" data-lut="extra" value="${num(lu.extra)}"></div>
+   <div class="res"><div class="t">HP gained<span>${base} ${fmt(con)} CON${num(lu.extra)?' '+fmt(num(lu.extra))+' extra':''}</span></div><b style="font-size:1.4rem">+${gain}</b></div></div>
+  ${p.choices.map(ch=>choiceHTML(c,p,ch)).join('')}
+  ${p.add.length?`<div class="card"><h2>NEW FEATURES (added automatically)</h2>${p.add.map(f=>`<details class="mb"><summary class="small"><b>${esc(f.title)}</b></summary><div class="desc">${esc(f.text)}</div></details>`).join('')}</div>`:''}
+  ${p.changes.length?`<div class="card"><h2>UPDATED AUTOMATICALLY</h2>${p.changes.map(x=>`<div class="small mb">✓ ${esc(x)}</div>`).join('')}<div class="small">✓ Max HP +${gain} · Hit Dice ${c.hd.total} → ${c.hd.total+1}</div></div>`:''}
+  ${p.spells?`<div class="card"><h2>SPELLS</h2><div class="small">${p.spells.dc>0?`☐ Learn ${p.spells.dc} new cantrip${p.spells.dc>1?'s':''} (total ${p.spells.cant})<br>`:''}${p.spells.dp>0?`☐ Prepare ${p.spells.dp} more spell${p.spells.dp>1?'s':''} (total ${p.spells.prep})`:''}</div><div class="muted mt">The spell list opens right after you level up.</div></div>`:''}
+  <p class="muted" style="font-size:.7rem">Rules text: ${esc(RULES?RULES.credit:'SRD 5.2.1, CC-BY-4.0')}</p>
   <div class="g2"><button class="btn g" data-a="close">Cancel</button><button class="btn" data-a="ludo">Level Up!</button></div>`);
+  const nv=document.querySelector('#modal .sheet'); if(nv&&st) nv.scrollTop=st;
 }
-function applyLevelUp(){
-  const c=C(), p=levelUpPlan(c), con=am(c,'con');
-  const base=lu.mode==='roll'?lu.roll:Math.floor(p.die/2)+1, gain=Math.max(1,base+con)+num(lu.extra);
+function luValidate(c,p){
+  const miss=[];
+  p.choices.forEach(ch=>{
+    if(ch.t==='sub'&&!(lu.sub&&(lu.sub!=='__other'||(lu.subOther||'').trim()))) miss.push('subclass');
+    if(ch.t==='asi'){ if(!lu.asi) miss.push('ability score / feat'); else if(lu.asi==='asi2'&&!lu.a1) miss.push('ability for +2'); else if(lu.asi==='asi11'&&(!lu.a1||!lu.a2||lu.a1===lu.a2)) miss.push('two different abilities'); else if(lu.asi==='__other'&&!(lu.featOther||'').trim()) miss.push('feat name');
+      else if(lu.asi.startsWith('feat:')){const f=RULES.feats.find(x=>'feat:'+x.name===lu.asi); if(f&&f.ab.length&&!lu.fa) miss.push('ability for the feat\'s +1')} }
+    if(ch.t==='fs'&&!lu.fs) miss.push('fighting style');
+    if(ch.t==='inv'&&lu.inv.length!==ch.n) miss.push(`${ch.n} invocation${ch.n>1?'s':''}`);
+    if(ch.t==='meta'&&lu.meta.length!==ch.n) miss.push(`${ch.n} Metamagic options`);
+    if(ch.t==='exp'&&lu.exp.length!==ch.n) miss.push(`${ch.n} Expertise skills`);
+    if(ch.t==='wm'&&lu.wm.length!==ch.n) miss.push('weapon mastery');
+    if(ch.t==='arc'&&!lu.arc) miss.push('Mystic Arcanum spell');
+  });
+  return miss;
+}
+function applyLevelUp(force){
+  const c=C(), p=plan(c);
+  const miss=luValidate(c,p);
+  if(miss.length&&!force){ sheetConfirmMissing(miss); return }
   const snap=JSON.parse(JSON.stringify(c)); delete snap._undo;
-  c.level=p.nl; c.hp.max+=gain; c.hp.cur+=gain; c.hd.total+=1;
-  if(p.k==='warlock'){ c.pact.t=WARLOCK.slots(p.nl); c.pact.lvl=WARLOCK.slotLvl(p.nl); c.pact.u=Math.min(c.pact.u,c.pact.t) }
-  if(CASTER[p.k]){ const row=FULL[CASTER[p.k]==='full'?p.nl:Math.ceil(p.nl/2)]||[]; for(let l=1;l<=9;l++){c.slots[l].t=row[l-1]||0;c.slots[l].u=Math.min(c.slots[l].u,c.slots[l].t)} }
-  c.resources.forEach(r=>{ let m=null;
-    if(/luck/i.test(r.name)||/adrenaline/i.test(r.name)) m=p.pbNew; else if(p.k==='barbarian'&&/^rage/i.test(r.name)) m=p.nl<3?2:p.nl<6?3:p.nl<12?4:p.nl<17?5:6;
-    if(m!=null){ r.cur+=Math.max(0,m-r.max); r.max=m; } });
-  if(p.k==='barbarian') c.modes.forEach(m=>{if(/rage/i.test(m.name))m.dmgBonus=p.nl<9?2:p.nl<16?3:4});
-  p.feats.filter(f=>!/Ability Score|Check your class|Subclass feature/i.test(f)).forEach(f=>c.features.push({id:uid(),cat:'class',title:f,text:`Gained at level ${p.nl}. Tap ✎ Edit to add the rules text.`}));
+  const conBefore=am(c,'con');
+  const base=lu.mode==='roll'?lu.roll:Math.floor(p.die/2)+1, gain=Math.max(1,base+conBefore)+num(lu.extra);
+  c.level=p.nl; c.hp.max+=gain; c.hp.cur+=gain; c.hd.total+=1; if(p.R) c.hd.die='d'+p.R.hd;
+  const addF=(cat,title,text)=>c.features.push({id:uid(),cat,title,text:text||''});
+  p.add.forEach(f=>addF(f.cat,f.title,f.text));
+  if(p.pact){c.pact.t=p.pact.t;c.pact.lvl=p.pact.lv;c.pact.u=Math.min(c.pact.u,c.pact.t)}
+  if(p.slots) for(let l=1;l<=9;l++){c.slots[l].t=p.slots[l-1]||0;c.slots[l].u=Math.min(c.slots[l].u,c.slots[l].t)}
+  (p.res||[]).forEach(([id,m])=>{const r=findIn(c.resources,id); if(r){r.cur+=Math.max(0,m-r.max);r.max=m}});
+  if(p.newRes) c.resources.push(Object.assign({id:uid()},p.newRes));
+  if(p.rageDmg) c.modes.forEach(m=>{if(/rage/i.test(m.name))m.dmgBonus=p.rageDmg});
+  const bump=(a,n,mx)=>{ if(a) c.abilities[a]=Math.min(mx||20,num(c.abilities[a])+n) };
+  p.choices.forEach(ch=>{
+    if(ch.t==='sub'&&lu.sub){ if(lu.sub==='__other'){c.subclass=(lu.subOther||'').trim(); addF('class',`${c.subclass}: subclass features (level ${p.nl})`,'Add the rules text from your book with ✎ Edit.')}
+      else { c.subclass=lu.sub; addF('class',lu.sub,p.R.sub.desc); (p.R.sub.feat[p.nl]||[]).forEach(f=>addF('class',f.name+' ('+lu.sub+')',f.text)) } }
+    if(ch.t==='asi'&&lu.asi){ const lbl=ch.boon?'Epic Boon':'Ability Score Improvement';
+      if(lu.asi==='asi2'){bump(lu.a1,2);addF('feat',`${lbl} (level ${p.nl})`,`+2 ${ABN[lu.a1]||''}`)}
+      else if(lu.asi==='asi11'){bump(lu.a1,1);bump(lu.a2,1);addF('feat',`${lbl} (level ${p.nl})`,`+1 ${ABN[lu.a1]||''}, +1 ${ABN[lu.a2]||''}`)}
+      else if(lu.asi==='__other') addF('feat',(lu.featOther||'Feat').trim(),'Add the rules text from your book with ✎ Edit.');
+      else { const f=RULES.feats.find(x=>'feat:'+x.name===lu.asi); if(f){ addF('feat',f.name,f.text); if(lu.fa) bump(lu.fa,1,f.max) } } }
+    if(ch.t==='fs'&&lu.fs){const f=RULES.feats.find(x=>x.name===lu.fs); addF('feat','Fighting Style: '+lu.fs,f?f.text:'')}
+    if(ch.t==='inv') lu.inv.forEach(n=>{const i=RULES.inv.find(x=>x.name===n); addF('class','Eldritch Invocation: '+n,i?i.text:'')});
+    if(ch.t==='meta') lu.meta.forEach(n=>{const m=RULES.meta.find(x=>x.name===n); addF('class','Metamagic: '+n,m?m.text:'')});
+    if(ch.t==='exp') lu.exp.forEach(k=>{c.skills[k]=2});
+    if(ch.t==='wm') lu.wm.forEach(n=>{const w=RULES.weapons.find(x=>x.name===n); addF('class',`Weapon Mastery: ${n} (${w?w.m:''})`,'')});
+    if(ch.t==='arc'&&lu.arc){const x=SPELLDB.find(y=>y[0]===lu.arc); if(x&&!hasSpell(c,x[0])) c.spells.push({id:uid(),lvl:x[1],name:x[0],time:x[4],range:x[5],comp:x[6],dur:x[7],conc:!!x[8],ritual:!!x[9],prep:true,desc:'Mystic Arcanum: cast once per Long Rest without a spell slot.\n\n'+x[10]})}
+  });
+  // a higher CON modifier raises max HP for every level (2024 rules)
+  const dCon=am(c,'con')-conBefore; if(dCon) {c.hp.max+=dCon*p.nl; c.hp.cur+=dCon*p.nl}
   c._undo=snap; closeModal(); save(c); render();
-  showToast('Level Up!',`Level ${p.nl}`,`+${gain} HP · ${p.todo.length+p.feats.length} things to choose`,'n20');
+  showToast('Level Up!',`Level ${p.nl}`,`+${gain+(dCon*p.nl||0)} HP`,'n20');
+  if(p.spells){ tab='spells'; LS.set('dnd24.tab',tab); render(); setTimeout(()=>{pk.lvl='all';openPicker()},600) }
 }
-
-
+function sheetConfirmMissing(miss){
+  const keep=document.getElementById('modal').innerHTML;
+  const box=document.createElement('div'); box.className='ov'; box.style.alignItems='center'; box.id='missbox';
+  box.innerHTML=`<div class="sheet" style="border-radius:16px;max-width:420px"><h3>Not finished yet</h3><p class="small mb">Still to choose: ${esc(miss.join(', '))}.</p><div class="g2"><button class="btn g" data-a="missback">Go back</button><button class="btn o" data-a="missforce">Level up anyway</button></div></div>`;
+  document.body.appendChild(box);
+}
 /* ================= spell picker (SRD 5.2, offline) ================= */
 let SPELLDB=null, pk={q:'',lvl:'all',cls:'mine'}, pkOpen={};
 const CLASSES=['bard','cleric','druid','paladin','ranger','sorcerer','warlock','wizard'];
 async function loadSpells(){ if(SPELLDB) return SPELLDB; const r=await fetch('spells.json'); SPELLDB=await r.json(); return SPELLDB; }
 const hasSpell=(c,name)=>c.spells.some(x=>(x.name||'').toLowerCase()===name.toLowerCase());
 function prepLimits(c){ const k=clsKey(c), l=Math.max(1,num(c.level));
+  const L=RULES&&RULES.classes[k]&&RULES.classes[k].levels[l]; if(L&&(L.cant||L.prep)) return {cant:L.cant||0,prep:L.prep||0};
   if(k==='warlock') return {cant:T(WARLOCK.cant,l),prep:T(WARLOCK.prep,l)}; return null; }
 async function openPicker(){
   const c=C(); if(!CLASSES.includes(clsKey(c))) pk.cls=pk.cls==='mine'?'all':pk.cls;
@@ -575,7 +684,7 @@ function pkRender(){
   const c=C(), k=clsKey(c), lim=prepLimits(c), mine=CLASSES.includes(k);
   const nC=c.spells.filter(x=>num(x.lvl)===0).length, nP=c.spells.filter(x=>num(x.lvl)>0&&x.prep).length;
   const h=document.getElementById('pkhead'); if(!h) return;
-  h.innerHTML=`${lim?`<div class="res"><div class="t">${esc(c.cls)} ${c.level}<span>Cantrips ${nC}/${lim.cant} · Prepared ${nP}/${lim.prep} (Pact of the Chain / invocation spells don't count)</span></div></div>`:''}
+  h.innerHTML=`${lim?`<div class="res"><div class="t">${esc(c.cls)} ${c.level} · your spells: ${c.spells.length}<span>Cantrips ${nC}/${lim.cant} · Prepared ${nP}/${lim.prep} (spells granted by features don't count)</span></div></div>`:`<div class="muted mb">Your spells: ${c.spells.length}</div>`}
    <div class="pips mb" style="gap:6px">${[['mine',mine?c.cls+' list':null],['all','All classes'],...CLASSES.filter(x=>x!==k).map(x=>[x,x[0].toUpperCase()+x.slice(1)])].filter(x=>x[1]).map(([v,l])=>`<button class="chip ${pk.cls===v?'on':''}" data-a="pkcls" data-k="${v}">${esc(l)}</button>`).join('')}</div>
    <div class="pips mb" style="gap:6px">${['all',0,1,2,3,4,5,6,7,8,9].map(v=>`<button class="chip ${String(pk.lvl)===String(v)?'on':''}" data-a="pklvl" data-k="${v}">${v==='all'?'All':v===0?'Cantrip':'L'+v}</button>`).join('')}</div>`;
   const cls=pk.cls==='mine'?k:pk.cls, q=pk.q.trim().toLowerCase();
@@ -588,7 +697,7 @@ function pkRender(){
 function pkToggle(name){
   const c=C(), x=SPELLDB.find(y=>y[0]===name); if(!x) return;
   if(hasSpell(c,name)){ c.spells=c.spells.filter(y=>(y.name||'').toLowerCase()!==name.toLowerCase()); msg('Removed '+name) }
-  else { c.spells.push({id:uid(),lvl:x[1],name:x[0],time:x[4],range:x[5],comp:x[6],dur:x[7],conc:!!x[8],ritual:!!x[9],prep:true,desc:x[10]}); }
+  else { c.spells.push({id:uid(),lvl:x[1],name:x[0],time:x[4],range:x[5],comp:x[6],dur:x[7],conc:!!x[8],ritual:!!x[9],prep:true,desc:x[10]}); msg('Added ✓') }
   save(c); render(); pkRender();
 }
 
@@ -662,10 +771,18 @@ const A={
   pkopen:el=>{pkOpen[el.dataset.k]=!pkOpen[el.dataset.k];pkRender()},
   pkadd:el=>pkToggle(el.dataset.k),
   prepToggle:el=>{const c=C();const sp=findIn(c.spells,el.dataset.id);sp.prep=!sp.prep;save(c);render()},
-  levelup:()=>{closeModal();const c=C();if(num(c.level)>=20)return msg('Already level 20');const p=levelUpPlan(c);lu={mode:'avg',roll:0,extra:p.tough?2:0};luSheet()},
-  luavg:()=>{lu.extra=num(document.getElementById('luextra').value);lu.mode='avg';luSheet()},
-  luroll:()=>{const p=levelUpPlan(C());lu.extra=num(document.getElementById('luextra').value);lu.mode='roll';lu.roll=d(p.die);luSheet()},
-  ludo:()=>{lu.extra=num(document.getElementById('luextra').value);applyLevelUp()},
+  levelup:async()=>{closeModal();const c=C();if(num(c.level)>=20)return msg('Already level 20');
+    try{await Promise.all([loadRules(),loadSpells()])}catch(e){}
+    const p=plan(c);lu={mode:'avg',roll:0,extra:p.tough?2:0,sub:'',subOther:'',asi:'',a1:'',a2:'',fa:'',featOther:'',fs:'',inv:[],meta:[],exp:[],wm:[],arc:''};luSheet()},
+  luavg:()=>{lu.mode='avg';luSheet(true)},
+  luroll:()=>{const p=plan(C());lu.mode='roll';lu.roll=d(p.die);luSheet(true)},
+  lupick:el=>{const g=el.dataset.g,v=el.dataset.v,p=plan(C());
+    if(['inv','meta','exp','wm'].includes(g)){const ch=p.choices.find(x=>x.t===g);const arr=lu[g];const i=arr.indexOf(v);if(i>=0)arr.splice(i,1);else{if(ch&&arr.length>=ch.n)arr.shift();arr.push(v)}}
+    else lu[g]=lu[g]===v?'':v;
+    luSheet(true)},
+  ludo:()=>applyLevelUp(false),
+  missback:()=>{const b=document.getElementById('missbox');b&&b.remove()},
+  missforce:()=>{const b=document.getElementById('missbox');b&&b.remove();applyLevelUp(true)},
   undolevel:()=>{const c=C();if(!c._undo)return;confirmBox(`Undo level up? Back to level ${c._undo.level}.`,()=>{const i=chars.indexOf(c);const u=c._undo;u.updatedAt=Date.now();chars[i]=normalize(u)},'Undo')},
   impreplace:()=>{const {ch,ex}=pendingImport;const i=chars.indexOf(ex);ch.id=ex.id;ch.updatedAt=Date.now();chars[i]=ch;curId=ch.id;closeModal();save(ch);render();msg('Updated ✓')},
   impboth:()=>{const {ch}=pendingImport;ch.name+=' (copy)';pendingImport.add()},
@@ -733,9 +850,10 @@ const A={
 };
 document.addEventListener('click',e=>{const el=e.target.closest('[data-a]');if(!el)return;const f=A[el.dataset.a];if(!f)return;
   if(el.dataset.a==='cond'){f(el);return} if(el.tagName==='INPUT')return; f(el,e)});
-document.addEventListener('change',e=>{const el=e.target;if(!el.dataset||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.dataset.num?num(el.value):el.value);save();});
-document.addEventListener('input',e=>{if(e.target.id==='pkq'){pk.q=e.target.value;pkRender();return}const el=e.target;if(el.tagName!=='TEXTAREA'||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.value);clearTimeout(saveT);saveT=setTimeout(()=>save(c),600)});
+document.addEventListener('change',e=>{const el=e.target;if(el.dataset&&el.dataset.lu){lu[el.dataset.lu]=el.value;luSheet(true);return}if(el.dataset&&el.dataset.lut){lu[el.dataset.lut]=el.dataset.lut==='extra'?num(el.value):el.value;if(el.dataset.lut==='extra')luSheet(true);return}if(!el.dataset||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.dataset.num?num(el.value):el.value);save();});
+document.addEventListener('input',e=>{if(e.target.id==='pkq'){pk.q=e.target.value;pkRender();return}if(e.target.dataset&&e.target.dataset.lut&&e.target.dataset.lut!=='extra'){lu[e.target.dataset.lut]=e.target.value;return}const el=e.target;if(el.tagName!=='TEXTAREA'||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.value);clearTimeout(saveT);saveT=setTimeout(()=>save(c),600)});
 render();
+loadRules().catch(()=>{}); loadSpells().catch(()=>{});
 </script>
 </body>
 </html>
