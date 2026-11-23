@@ -1,5 +1,5 @@
-const CACHE='dnd24-v7';
-const FILES=['./','index.html','spells.json','rules.json','manifest.webmanifest','icon-192.png','icon-512.png'];
+const CACHE='dnd24-v8';
+const FILES=['./','index.html','spells.json','rules.json','roll20.js','pdf.min.mjs','pdf.worker.min.mjs','manifest.webmanifest','icon-192.png','icon-512.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>Promise.all(FILES.map(f=>fetch(f,{cache:'no-store'}).then(r=>c.put(f,r)))))) ;self.skipWaiting()});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;

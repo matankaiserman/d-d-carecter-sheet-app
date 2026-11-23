@@ -148,6 +148,7 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)}
 <div id="modal"></div>
 <div id="toast"></div>
 
+<script src="roll20.js"></script>
 <script>
 "use strict";
 /* ================= constants ================= */
@@ -301,7 +302,7 @@ window.addEventListener('storage',e=>{ if(e.key==='dnd24.chars'&&e.newValue){ tr
 const loot={text:LS.get('dnd24.loot','')};
 function syncNote(){ const el=document.getElementById('syncnote'); if(el) el.textContent='📱 Saved on this phone only. Use Share → file to back up a character.'; }
 try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(e){}
-const APP_VERSION='1.5 (inventory import)';
+const APP_VERSION='1.6 (Roll20 PDF import)';
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   const hadCtrl=!!navigator.serviceWorker.controller; let reloaded=false;
   navigator.serviceWorker.addEventListener('controllerchange',()=>{ if(hadCtrl&&!reloaded){reloaded=true;location.reload()} });
@@ -720,11 +721,54 @@ function pkToggle(name){
   save(c); render(); pkRender();
 }
 
+
+/* ================= import from a Roll20 PDF export ================= */
+let pdfDraft=null;
+async function pdfItems(file){
+  const pdfjs=await import('./pdf.min.mjs'); pdfjs.GlobalWorkerOptions.workerSrc='./pdf.worker.min.mjs';
+  const doc=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise; const out=[];
+  for(let p=1;p<=doc.numPages;p++){ const pg=await doc.getPage(p), vp=pg.getViewport({scale:1}), tc=await pg.getTextContent();
+    tc.items.forEach(it=>{ if(!it.str||!it.str.trim()) return; out.push({p,x:Math.round(it.transform[4]),y:Math.round(vp.height-it.transform[5]),h:Math.round(it.height),w:Math.round(it.width),s:it.str}) }); }
+  return out;
+}
+function pdfSheet(){
+  sheet(`<h3>📄 Import from a Roll20 PDF</h3><p class="muted mb">In Roll20 open the character → ⋯ → Export / Print to PDF (D&D 2024 sheet). Pick that PDF here. Nothing leaves your phone.</p>
+   <input type="file" id="pdffile" accept="application/pdf,.pdf"><div id="pdfstatus" class="muted mt"></div>
+   <button class="btn g w mt" data-a="close">Cancel</button>`);
+}
+async function pdfRun(file){
+  const st=document.getElementById('pdfstatus'); st.textContent='Reading the PDF…';
+  try{ await Promise.all([loadRules(),loadSpells()]).catch(()=>{});
+    const items=await pdfItems(file); st.textContent='Reading the sheet…';
+    const r=parseRoll20(items,{rules:RULES,spells:SPELLDB||[],uid});
+    if(!r.char){ st.innerHTML='<b style="color:var(--red)">'+esc(r.warnings.join(' '))+'</b>'; return }
+    const c=Object.assign(blankChar(),r.char); c.id=uid(); c.updatedAt=Date.now(); normalize(c);
+    pdfDraft={c,warnings:r.warnings}; pdfReview();
+  }catch(e){ st.innerHTML='<b style="color:var(--red)">Could not read this PDF ('+esc(e.message||e)+'). Open the app once with internet so the PDF reader gets saved.</b>' }
+}
+function pdfReview(){
+  const {c,warnings}=pdfDraft; const prof=Object.keys(c.skills).length, ex=chars.find(x=>x.name===c.name);
+  sheet(`<h3>Check before saving</h3>
+   <div class="fld"><label>Name</label><input data-pdf="name" dir="auto" value="${esc(c.name)}"></div>
+   <div class="fgrid"><div class="fld"><label>Class</label><input data-pdf="cls" value="${esc(c.cls)}"></div><div class="fld"><label>Level</label><input data-pdf="level" type="number" inputmode="numeric" value="${c.level}"></div>
+   <div class="fld"><label>Subclass</label><input data-pdf="subclass" value="${esc(c.subclass)}"></div><div class="fld"><label>Species</label><input data-pdf="species" value="${esc(c.species)}"></div></div>
+   <div class="card"><h2>WHAT WAS FOUND</h2><div class="g3 mb">${ABIL.map(a=>`<div class="box"><div class="l">${a.toUpperCase()}</div><div class="v">${c.abilities[a]}</div></div>`).join('')}</div>
+    <div class="small" style="line-height:1.8">AC <b>${c.ac}</b> · HP <b>${c.hp.cur}/${c.hp.max}</b> · Hit Dice <b>${c.hd.total}${esc(c.hd.die)}</b> · Speed <b>${c.speed} ft</b><br>
+    Background <b>${esc(c.background||'—')}</b> · Saves: <b>${Object.keys(c.saveProf).map(a=>a.toUpperCase()).join(', ')||'—'}</b><br>
+    Skills: <b>${Object.entries(c.skills).map(([k,v])=>(SKILLS.find(x=>x[0]===k)||[,k])[1]+(v==2?' (expertise)':'')).join(', ')||'—'}</b><br>
+    ✨ ${c.spells.length} spells · ⚔️ ${c.attacks.length} attacks · 📜 ${c.features.length} features · 🎒 ${c.inventory.length} items · ${c.resources.length} resources<br>
+    Coins: ${['cp','sp','ep','gp','pp'].map(k=>c.coins[k]+' '+k.toUpperCase()).join(' · ')}</div></div>
+   ${warnings.length?`<div class="card" style="border-color:var(--red)"><h2>WARNINGS</h2>${warnings.map(w=>`<div class="small mb">⚠️ ${esc(w)}</div>`).join('')}</div>`:''}
+   <p class="muted mb">Not in the PDF, so check after import: which items are equipped (armor is marked automatically), Heroic Inspiration, and current HP if you're hurt.</p>
+   ${ex?`<p class="small mb">A character named “${esc(ex.name)}” already exists.</p><div class="g2"><button class="btn" data-a="pdfreplace">Replace it</button><button class="btn o" data-a="pdfsave">Keep both</button></div>`:`<button class="btn w" data-a="pdfsave">Create character</button>`}
+   <button class="btn g w mt" data-a="close">Cancel</button>`);
+}
+
 /* ================= roster / share ================= */
 function rosterHTML(){
   return `<h3>Characters</h3>`+chars.map(c=>`<div class="charrow ${c.id===curId?'cur':''}"><div class="info" data-a="pick" data-id="${c.id}"><b dir="auto">${esc(c.name)}</b><span class="muted">Lvl ${c.level} ${esc(c.species)} ${esc(c.cls)}</span></div>
     <button class="btn g sm" data-a="export" data-id="${c.id}">Share</button><button class="pencil" data-a="charmenu" data-id="${c.id}">⋯</button></div>`).join('')
-   +`<div class="g2 mt"><button class="btn" data-a="newchar">+ New</button><button class="btn o" data-a="import">⇩ Import</button></div><div class="sync" id="syncnote"></div><div class="sync">App version ${APP_VERSION}</div>`;
+   +`<button class="btn w mt" data-a="pdfimport">📄 Import from Roll20 PDF</button><div class="g2 mt"><button class="btn" data-a="newchar">+ New</button><button class="btn o" data-a="import">⇩ Import</button></div><div class="sync" id="syncnote"></div><div class="sync">App version ${APP_VERSION}</div>`;
 }
 function b64e(bytes){let s='';bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 function b64d(str){const s=atob(str);return Uint8Array.from(s,ch=>ch.charCodeAt(0))}
@@ -787,6 +831,9 @@ const A={
   delchar:el=>{const id=el.dataset.id;const c=findIn(chars,id);confirmBox(`Delete ${c.name}? This can't be undone (export it first if unsure).`,()=>{chars=chars.filter(x=>x.id!==id);if(!chars.length)chars.push(blankChar());if(curId===id)curId=chars[0].id})},
   export:el=>exportChar(el.dataset.id),
   import:importSheet, doimport:doImport,
+  pdfimport:()=>pdfSheet(),
+  pdfsave:()=>{const c=pdfDraft.c;if(chars.find(x=>x.name===c.name&&x.id!==c.id)&&!/\(copy\)$/.test(c.name))c.name+=' (copy)';chars.push(c);curId=c.id;tab='combat';closeModal();save(c);render();msg('Character created ✓')},
+  pdfreplace:()=>{const c=pdfDraft.c;const ex=chars.find(x=>x.name===c.name);const i=chars.indexOf(ex);c.id=ex.id;chars[i]=c;curId=c.id;tab='combat';closeModal();save(c);render();msg('Character updated ✓')},
   picker:()=>openPicker(),
   pkcls:el=>{pk.cls=el.dataset.k;pkRender()},
   pklvl:el=>{pk.lvl=el.dataset.k;pkRender()},
@@ -874,7 +921,7 @@ const A={
 };
 document.addEventListener('click',e=>{const el=e.target.closest('[data-a]');if(!el)return;const f=A[el.dataset.a];if(!f)return;
   if(el.dataset.a==='cond'){f(el);return} if(el.tagName==='INPUT')return; f(el,e)});
-document.addEventListener('change',e=>{const el=e.target;if(el.dataset&&el.dataset.lu){lu[el.dataset.lu]=el.value;luSheet(true);return}if(el.dataset&&el.dataset.lut){lu[el.dataset.lut]=el.dataset.lut==='extra'?num(el.value):el.value;if(el.dataset.lut==='extra')luSheet(true);return}if(!el.dataset||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.dataset.num?num(el.value):el.value);save();});
+document.addEventListener('change',e=>{const el=e.target;if(el.id==='pdffile'&&el.files[0]){pdfRun(el.files[0]);return}if(el.dataset&&el.dataset.pdf&&pdfDraft){pdfDraft.c[el.dataset.pdf]=el.dataset.pdf==='level'?Math.max(1,num(el.value)):el.value;return}if(el.dataset&&el.dataset.lu){lu[el.dataset.lu]=el.value;luSheet(true);return}if(el.dataset&&el.dataset.lut){lu[el.dataset.lut]=el.dataset.lut==='extra'?num(el.value):el.value;if(el.dataset.lut==='extra')luSheet(true);return}if(!el.dataset||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.dataset.num?num(el.value):el.value);save();});
 document.addEventListener('input',e=>{if(e.target.id==='pkq'){pk.q=e.target.value;pkRender();return}if(e.target.dataset&&e.target.dataset.lut&&e.target.dataset.lut!=='extra'){lu[e.target.dataset.lut]=e.target.value;return}const el=e.target;if(el.tagName!=='TEXTAREA'||!el.dataset.bind)return;const c=C();setP(c,el.dataset.bind,el.value);clearTimeout(saveT);saveT=setTimeout(()=>save(c),600)});
 render();
 loadRules().catch(()=>{}); loadSpells().catch(()=>{});
